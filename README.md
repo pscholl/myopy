@@ -1,5 +1,5 @@
-Myo.py - read raw data from myo on the cmdline
-==============================================
+Myo.py - read raw data from myo on the cmdline via Bluez
+========================================================
 
  make myo.py executable and run. It is based on DBUS and the experimental
 features of BLUEZ. These need to be enabled by running bluetoothd with the -E
