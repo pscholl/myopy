@@ -3,74 +3,108 @@
 #
 # Information based on https://github.com/thalmiclabs/myo-bluetooth/blob/master/myohw.h
 
-import argparse, struct
-from bluepy import btle
-from time import sleep
+import dbus.mainloop.glib; dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+from gi.repository import GObject
+from struct import pack, unpack
+import argparse, dbus, sys
 
+VIBS={'no':0, 'short':1, 'medium':2, 'long':3}
 cmdline = argparse.ArgumentParser("read data from a Myo Armband")
+cmdline.add_argument('--no-imu', '-i', action="store_true", help="do not print IMU data")
+cmdline.add_argument('--no-emg', '-e', action="store_true", help="do not print EMG data")
+cmdline.add_argument('--vibrate','-v', type=str, default="no", help="vibrate at the start", choices=VIBS.keys())
 cmdline.add_argument('addr', metavar='ADDR', type=str, help="mac-addr of the Myo (use hcitool lescan)")
 args = cmdline.parse_args()
 
-class Myo(btle.DefaultDelegate):
+class Myo():
     def __init__(self, addr, imu=None, emg=None, cls=None):
-        btle.DefaultDelegate.__init__(self)
+        addr = addr.replace(":","_")
+        bus = dbus.SystemBus()
+        myo = bus.get_object('org.bluez','/org/bluez/hci0/dev_%s'%addr)
 
-        self.perip   = btle.Peripheral(args.addr)
-        self.service = self.perip.discoverServices()
-        self.control = self.service[btle.UUID("d5060001-a904-deb9-4748-2c7f4a124842")]
+        # Connect to the myo first
+        dev = dbus.Interface(myo,dbus_interface="org.bluez.Device1")
+        try: dev.Connect()
+        except: pass
 
-        self.imu = self.service[btle.UUID("d5060002-a904-deb9-4748-2c7f4a124842")]
-        self.emg = self.service[btle.UUID("d5060005-a904-deb9-4748-2c7f4a124842")]
-        self.cls = self.service[btle.UUID("d5060003-a904-deb9-4748-2c7f4a124842")]
+        # Connect to the Characteristics
+        self.cmd = dbus.Interface(
+                bus.get_object('org.bluez', '/org/bluez/hci0/dev_%s/service0013/char0018'%addr),
+                dbus_interface='org.bluez.GattCharacteristic1')
 
-        self.info = self.control.getCharacteristics("d5060101-a904-deb9-4748-2c7f4a124842")[0]
-        self.vers = self.control.getCharacteristics("d5060201-a904-deb9-4748-2c7f4a124842")[0]
-        self.cmd  = self.control.getCharacteristics("d5060401-a904-deb9-4748-2c7f4a124842")[0]
-        self.imudata = self.imu.getCharacteristics("d5060402-a904-deb9-4748-2c7f4a124842")[0]
-        self.emgdata = self.emg.getCharacteristics("d5060105-a904-deb9-4748-2c7f4a124842")[0]
+        # enable IMU notification
+        if imu:
+            dbus.Interface(
+                    bus.get_object('org.bluez', '/org/bluez/hci0/dev_%s/service001a/char001b'%addr),
+                    dbus_interface='org.bluez.GattCharacteristic1').StartNotify()
 
-        self.imucb = imu
-        self.embcb = emg
-        self.clscb = cls
+            # Format for motion data is w,x,y,z, ax,ay,az, gx,gy,gz, i.e. a quaternion, acceleration and gyroscope
+            bus.add_signal_receiver(lambda ev,v,z: imu(*[float(x)/scale for (x,scale) in zip(unpack('10h',pack('20B',*v['Value'])),[16384,16384,16384,16384,2048,2048,2048,16,16,16])]),
+                    dbus_interface='org.freedesktop.DBus.Properties',
+                    path='/org/bluez/hci0/dev_%s/service001a/char001b'%addr)
 
-        print(self.info.read())
-        print(self.vers.read())
-        print(self.imudata.valHandle)
-        self.perip.writeCharacteristic(self.imudata.valHandle+1, b'\x03\00', False)
 
-        # subscribe
-        self.cmd.write(struct.pack("BBBBB",
-            1, # set_mode cmd
-            3, # payload size
-            2 if imu else 0, # send all IMU data, see myohw_imu_mode_t
-            2 if emg else 0, # send filtered EMG, see myohw_emg_mode_t
-            1 if cls else 0, # classifier mode on or off
-        ))
+        # # enable raw EMG notification
+        if emg:
+            dbus.Interface(
+                    bus.get_object('org.bluez', '/org/bluez/hci0/dev_%s/service0029/char002a'%addr),
+                    dbus_interface='org.bluez.GattCharacteristic1').StartNotify()
+            dbus.Interface(
+                    bus.get_object('org.bluez', '/org/bluez/hci0/dev_%s/service0029/char002d'%addr),
+                    dbus_interface='org.bluez.GattCharacteristic1').StartNotify()
+            dbus.Interface(
+                    bus.get_object('org.bluez', '/org/bluez/hci0/dev_%s/service0029/char0030'%addr),
+                    dbus_interface='org.bluez.GattCharacteristic1').StartNotify()
+            dbus.Interface(
+                    bus.get_object('org.bluez', '/org/bluez/hci0/dev_%s/service0029/char0033'%addr),
+                    dbus_interface='org.bluez.GattCharacteristic1').StartNotify()
 
-        self.perip.setDelegate(self)
+            bus.add_signal_receiver(lambda ev,v,z: emg(unpack('8b',pack('8B',*v["Value"][:8])),unpack('8b',pack('8B',*v["Value"][8:]))),
+                    dbus_interface='org.freedesktop.DBus.Properties',
+                    path='/org/bluez/hci0/dev_%s/service0029/char002d'%addr)
+            bus.add_signal_receiver(lambda ev,v,z: emg(unpack('8b',pack('8B',*v["Value"][:8])),unpack('8b',pack('8B',*v["Value"][8:]))),
+                    dbus_interface='org.freedesktop.DBus.Properties',
+                    path='/org/bluez/hci0/dev_%s/service0029/char002a'%addr)
+            bus.add_signal_receiver(lambda ev,v,z: emg(unpack('8b',pack('8B',*v["Value"][:8])),unpack('8b',pack('8B',*v["Value"][8:]))),
+                    dbus_interface='org.freedesktop.DBus.Properties',
+                    path='/org/bluez/hci0/dev_%s/service0029/char0030'%addr)
+            bus.add_signal_receiver(lambda ev,v,z: emg(unpack('8b',pack('8B',*v["Value"][:8])),unpack('8b',pack('8B',*v["Value"][8:]))),
+                    dbus_interface='org.freedesktop.DBus.Properties',
+                    path='/org/bluez/hci0/dev_%s/service0029/char0033'%addr)
+
+        # enable raw CLS notification, needs more magic, so disabled!
+        #if cls:
+        #    dbus.Interface(
+        #            bus.get_object('org.bluez', '/org/bluez/hci0/dev_%s/service0021/char0022'%addr),
+        #            dbus_interface='org.bluez.GattCharacteristic1').StartNotify()
+
+        #    bus.add_signal_receiver(print,
+        #            dbus_interface='org.freedesktop.DBus.Properties',
+        #            path='/org/bluez/hci0/dev_%s/service0021/char002222'%addr)
+
+
+        self.cmd.WriteValue([1,3,
+            2 if emg else 0,  # filtered EMG data
+            3 if imu else 0,  # motionen events and raw IMU
+            1 if cls else 0]) # enable classification
 
     def vibrate(self, time=1):
-        if time < 0 or time > 3:
-            raise ("must be in range [0,3]")
-        #self.cmd.write(struct.pack('BBB',3,1,time),True)
-        self.perip.writeCharacteristic(self.cmd.valHandle,b'\x03\x00\x01')
-
-    def vibrate2(self, duration=100,strange=128):
-        pass
-
-    def handleNotification(self,ch,data):
-        print(ch)
-        print(data)
-
+        self.cmd.WriteValue([3,1,time])
 
 if __name__=="__main__":
-    m = Myo(args.addr, True)
-    m.vibrate(2)
+    loop = GObject.MainLoop()
 
-    while True:
-        if m.perip.waitForNotifications(1.0):
-            continue
+    def emg_print(s1,s2):
+        print(" ".join([str(s) for s in s1]))
+        print(" ".join([str(s) for s in s2]))
 
-        print (m.imudata.read())
+    m = Myo(args.addr,
+            None if args.no_imu else print,
+            None if args.no_emg else emg_print)
 
-        sleep(.1)
+    m.vibrate(VIBS[args.vibrate])
+
+    if args.no_imu and args.no_emg and args.no_classification:
+        sys.exit(0)
+    else:
+        loop.run()
