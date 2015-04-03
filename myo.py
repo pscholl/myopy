@@ -101,9 +101,14 @@ if __name__=="__main__":
     def emg_print(s1,s2):
         print(" ".join([str(s) for s in s1]))
         print(" ".join([str(s) for s in s2]))
+        sys.stdout.flush()
+
+    def fprint(*args):
+        print(*args)
+        sys.stdout.flush()
 
     m = Myo(args.addr,
-            None if args.no_imu else print,
+            None if args.no_imu else fprint,
             None if args.no_emg else emg_print)
 
     m.vibrate(VIBS[args.vibrate])
