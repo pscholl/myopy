@@ -7,6 +7,7 @@ import dbus.mainloop.glib; dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
 from gi.repository import GObject
 from struct import pack, unpack
 from time import sleep
+from math import pi
 import argparse, dbus, sys
 
 VIBS={'no':0, 'short':1, 'medium':2, 'long':3}
@@ -15,21 +16,23 @@ cmdline.add_argument('--no-imu', '-i', action="store_true", help="do not print I
 cmdline.add_argument('--no-emg', '-e', action="store_true", help="do not print EMG data")
 cmdline.add_argument('--vibrate','-v', type=str, default="no", help="vibrate at the start", choices=VIBS.keys())
 cmdline.add_argument('--no-disconnect', '-d', action="store_true", help="do not disconnect from Myo at program exit")
+cmdline.add_argument('--interface', '-I', default="hci0", type=str, help="bluetooth interface to use")
 cmdline.add_argument('addr', metavar='ADDR', type=str, help="mac-addr of the Myo (use hcitool lescan)")
 args = cmdline.parse_args()
 
 class Myo():
     def char(self,service,uid):
         return dbus.Interface(
-                self.bus.get_object('org.bluez', '/org/bluez/hci0/dev_%s/service%04x/char%04x'%(self.addr,service,uid)),
+                self.bus.get_object('org.bluez', '/org/bluez/%s/dev_%s/service%04x/char%04x'%(self.hci,self.addr,service,uid)),
                 dbus_interface='org.bluez.GattCharacteristic1')
 
-    def __init__(self, addr, imu=None, emg=None, cls=None):
+    def __init__(self, addr, imu=None, emg=None, cls=None,hci="hci0"):
         addr = addr.replace(":","_")
         self.addr = addr
         bus = dbus.SystemBus()
         self.bus = bus
-        myo = bus.get_object('org.bluez','/org/bluez/hci0/dev_%s'%addr)
+        self.hci = hci
+        myo = bus.get_object('org.bluez','/org/bluez/%s/dev_%s'%(hci,addr))
 
         # Connect to the myo first
         self.dev = dbus.Interface(myo,dbus_interface="org.bluez.Device1")
@@ -51,9 +54,9 @@ class Myo():
             self.char(0x1a,0x1b).StartNotify()
 
             # Format for motion data is w,x,y,z, ax,ay,az, gx,gy,gz, i.e. a quaternion, acceleration and gyroscope
-            bus.add_signal_receiver(lambda ev,v,z: imu(*[float(x)/scale for (x,scale) in zip(unpack('10h',pack('20B',*v['Value'])),[16384,16384,16384,16384,2048,2048,2048,16,16,16])]),
+            bus.add_signal_receiver(lambda ev,v,z: imu(*[float(x)/scale for (x,scale) in zip(unpack('10h',pack('20B',*v['Value'])),[16384,16384,16384,16384,2048/9.798,2048/9.798,2048/9.798,16*180/pi,16*180/pi,16*180/pi])]),
                     dbus_interface='org.freedesktop.DBus.Properties',
-                    path='/org/bluez/hci0/dev_%s/service001a/char001b'%addr)
+                    path='/org/bluez/%s/dev_%s/service001a/char001b'%(self.hci,addr))
 
 
         # # enable raw EMG notification
@@ -65,16 +68,16 @@ class Myo():
 
             bus.add_signal_receiver(lambda ev,v,z: emg(unpack('8b',pack('8B',*v["Value"][:8])),unpack('8b',pack('8B',*v["Value"][8:]))),
                     dbus_interface='org.freedesktop.DBus.Properties',
-                    path='/org/bluez/hci0/dev_%s/service0029/char002d'%addr)
+                    path='/org/bluez/%s/dev_%s/service0029/char002d'%(self.hci,addr))
             bus.add_signal_receiver(lambda ev,v,z: emg(unpack('8b',pack('8B',*v["Value"][:8])),unpack('8b',pack('8B',*v["Value"][8:]))),
                     dbus_interface='org.freedesktop.DBus.Properties',
-                    path='/org/bluez/hci0/dev_%s/service0029/char002a'%addr)
+                    path='/org/bluez/%s/dev_%s/service0029/char002a'%(self.hci,addr))
             bus.add_signal_receiver(lambda ev,v,z: emg(unpack('8b',pack('8B',*v["Value"][:8])),unpack('8b',pack('8B',*v["Value"][8:]))),
                     dbus_interface='org.freedesktop.DBus.Properties',
-                    path='/org/bluez/hci0/dev_%s/service0029/char0030'%addr)
+                    path='/org/bluez/%s/dev_%s/service0029/char0030'%(self.hci,addr))
             bus.add_signal_receiver(lambda ev,v,z: emg(unpack('8b',pack('8B',*v["Value"][:8])),unpack('8b',pack('8B',*v["Value"][8:]))),
                     dbus_interface='org.freedesktop.DBus.Properties',
-                    path='/org/bluez/hci0/dev_%s/service0029/char0033'%addr)
+                    path='/org/bluez/%s/dev_%s/service0029/char0033'%(self.hci,addr))
 
         # enable raw CLS notification, needs more magic, so disabled!
         #if cls:
@@ -95,6 +98,22 @@ class Myo():
     def vibrate(self, time=1):
         self.cmd.WriteValue([3,1,time])
 
+
+def hci_powered(hci):
+    bus = dbus.SystemBus()
+    iface = dbus.Interface(
+             bus.get_object('org.bluez', '/org/bluez/%s'%hci),
+             dbus_interface='org.bluez.Adapter1')
+    return iface.Powered
+
+def hci_gatt_enabled(hci):
+    bus = dbus.SystemBus()
+    iface = dbus.Interface(
+             bus.get_object('org.bluez', '/org/bluez/%s'%hci),
+             dbus_interface='org.bluez.GattManager1')
+    try: iface.RegisterProfile(); return True
+    except Exception as e: return not hasattr(e,"_dbus_error_name") # then it is org.freedesktop.DBus.Error.UnknownMethod
+
 if __name__=="__main__":
     loop = GObject.MainLoop()
 
@@ -107,9 +126,18 @@ if __name__=="__main__":
         print(*args)
         sys.stdout.flush()
 
+    if not hci_powered(args.interface):
+        sys.stderr.write("hci interface (%s) is not powered\n"%(hci))
+        sys.exit(-1)
+
+    if not hci_gatt_enabled(args.interface):
+        sys.stderr.write("bluetooth/DBUS interface has no GATT support, maybe start bluetoothd with -E")
+        sys.exit(-1)
+
     m = Myo(args.addr,
             None if args.no_imu else fprint,
-            None if args.no_emg else emg_print)
+            None if args.no_emg else emg_print,
+            args.interface)
 
     m.vibrate(VIBS[args.vibrate])
 

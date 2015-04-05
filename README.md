@@ -34,7 +34,7 @@ IMU data you can use
     0.965087890625 -0.04229736328125 -0.1903076171875 -0.1748046875 0.412109375 -0.00634765625 0.99658203125 -3.1875 -0.4375 -0.5
     ...
 
-which will suppress EMG data output. This print a quaternion (w,x,y,z), acceleration (x,y,z in units of g +-16) and gyroscope data (x,y,z in units of deg/s +-2000). You can also print both by not supplying any argument.
+which will suppress EMG data output. This print a quaternion (w,x,y,z), acceleration (x,y,z in units of m/s**2 +-16) and gyroscope data (x,y,z in units of rad/s +-35). You can also print both by not supplying any argument.
 
 To find the mac-addr of your MYO armband use:
 
