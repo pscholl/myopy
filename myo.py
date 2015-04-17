@@ -35,12 +35,14 @@ class Myo():
         myo = bus.get_object('org.bluez','/org/bluez/%s/dev_%s'%(hci,addr))
 
         # Connect to the myo first
+        sys.stderr.write("connecting ")
         self.dev = dbus.Interface(myo,dbus_interface="org.bluez.Device1")
         try: self.dev.Connect()
-        except: pass
+        except Exception as e:
+            sys.stderr.write("unable to connect\n")
+            raise(e)
 
         # poll for interface availability
-        sys.stderr.write("connecting ")
         while True:
             try: self.fwversion = self.char(0x13,0x16).ReadValue(); sleep(.5); break
             except: sys.stderr.write("."); sys.stderr.flush(); sleep(.5)
@@ -103,11 +105,12 @@ def hci_powered(hci):
     bus = dbus.SystemBus()
     iface = dbus.Interface(
              bus.get_object('org.bluez', '/org/bluez/%s'%hci),
-             dbus_interface='org.bluez.Adapter1')
-    return iface.Powered
+             dbus_interface='org.freedesktop.DBus.Properties')
+    return iface.Get("org.bluez.Adapter1", "Powered")
 
 def hci_gatt_enabled(hci):
     bus = dbus.SystemBus()
+    xx = bus.get_object('org.bluez', '/org/bluez/%s'%hci)
     iface = dbus.Interface(
              bus.get_object('org.bluez', '/org/bluez/%s'%hci),
              dbus_interface='org.bluez.GattManager1')
@@ -127,12 +130,12 @@ if __name__=="__main__":
         sys.stdout.flush()
 
     if not hci_powered(args.interface):
-        sys.stderr.write("hci interface (%s) is not powered\n"%(hci))
+        sys.stderr.write("hci interface (%s) is not powered, use 'hciconfig hci0 up' to power up\n"%(args.interface))
         sys.exit(-1)
 
-    if not hci_gatt_enabled(args.interface):
-        sys.stderr.write("bluetooth/DBUS interface has no GATT support, maybe start bluetoothd with -E")
-        sys.exit(-1)
+    # if not hci_gatt_enabled(args.interface):
+    #     sys.stderr.write("bluetooth/DBUS interface has no GATT support, maybe start bluetoothd with -E")
+    #     sys.exit(-1)
 
     m = Myo(args.addr,
             None if args.no_imu else fprint,
